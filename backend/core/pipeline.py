@@ -78,6 +78,8 @@ class EvidencePipeline:
             applicability_report=applicability_report,
             uncertainties=uncertainties,
             insufficient_evidence=insufficient_evidence,
+            reliability=reliability,
+            critique=critique,
             session_id=ingested.get("session_id"),
         )
 

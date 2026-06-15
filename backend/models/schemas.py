@@ -23,6 +23,14 @@ class ERSBand(str, Enum):
     LOW = "Low"
 
 
+class UncertaintyCategory(str, Enum):
+    DATA_GAP = "data_gap"
+    METHODOLOGY = "methodology"
+    SCOPE = "scope"
+    TEMPORAL = "temporal"
+    POPULATION = "population"
+
+
 class Claim(BaseModel):
     claim_id: str
     source_id: str
@@ -77,6 +85,55 @@ class ERSResult(BaseModel):
     uncertainty_penalty: float
 
 
+# ── Phase 6 Output Models ──────────────────────────────────────────────
+
+
+class SupportMapEntry(BaseModel):
+    """Maps a claim to the answer section it supports."""
+    claim_id: str
+    source_id: str
+    supporting_text: str
+    relevance_score: float = Field(ge=0.0, le=1.0, default=1.0)
+    answer_section_index: int = 0
+
+
+class ContradictionManifestEntry(BaseModel):
+    """Human-readable contradiction summary for the final output."""
+    claim_a_text: str
+    claim_b_text: str
+    relation: RelationType
+    explanation: str
+    severity: str = "moderate"  # low, moderate, high
+
+
+class UncertaintyEntry(BaseModel):
+    """Structured uncertainty with category and impact assessment."""
+    description: str
+    category: UncertaintyCategory = UncertaintyCategory.DATA_GAP
+    impact_level: str = "moderate"  # low, moderate, high
+
+
+class AnswerSection(BaseModel):
+    """A discrete section of the synthesized answer with inline citations."""
+    heading: str
+    content: str
+    cited_claim_ids: list[str] = []
+
+
+class ResponseMetadata(BaseModel):
+    """Metadata about the response generation process."""
+    source_count: int = 0
+    claim_count: int = 0
+    contradiction_count: int = 0
+    applicability_flags_count: int = 0
+    insufficient_evidence: bool = False
+    ers_band: str = "Medium"
+    generation_model: str = "gemini-1.5-pro"
+
+
+# ── Request / Response ──────────────────────────────────────────────────
+
+
 class PipelineRequest(BaseModel):
     query: str
     user_id: Optional[str] = None
@@ -93,3 +150,9 @@ class PipelineResponse(BaseModel):
     uncertainties: list[str]
     insufficient_evidence: bool = False
     session_id: Optional[str] = None
+    # Phase 6 structured output fields
+    answer_sections: list[AnswerSection] = []
+    support_map: list[SupportMapEntry] = []
+    contradictions_manifest: list[ContradictionManifestEntry] = []
+    structured_uncertainties: list[UncertaintyEntry] = []
+    metadata: Optional[ResponseMetadata] = None
