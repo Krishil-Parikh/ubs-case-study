@@ -183,9 +183,9 @@ class ERSCalibrationAgent:
 
         # ── Step 5: build audit trail ─────────────────────────────────────
         formula_trace = (
-            f"ERS = {self.W_SOURCE}×{source_score:.3f}(src)"
-            f" + {self.W_CONSENSUS}×{consensus_score:.3f}(con)"
-            f" + {self.W_RETRIEVAL}×{retrieval_relevance:.3f}(ret)"
+            f"ERS = {self.W_SOURCE:.2f}×{source_score:.3f}(src)"
+            f" + {self.W_CONSENSUS:.2f}×{consensus_score:.3f}(con)"
+            f" + {self.W_RETRIEVAL:.2f}×{retrieval_relevance:.3f}(ret)"
             f" = {base:.4f}(base)"
             f" − {penalties.contradiction_penalty:.4f}(contra)"
             f" − {penalties.applicability_penalty:.4f}(applic)"

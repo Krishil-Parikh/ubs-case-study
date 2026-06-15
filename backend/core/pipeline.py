@@ -77,7 +77,7 @@ class EvidencePipeline:
         # ── Phase 4 — Parallel scoring ────────────────────────────────────
         t0 = time.perf_counter()
         reliability, consensus_score, contradiction_graph, applicability_report = await asyncio.gather(
-            asyncio.to_thread(self.a4.run, documents),
+            asyncio.to_thread(self.a4.run, documents, claims),   # claims needed for caveat map
             asyncio.to_thread(self.a5.run, claims),
             asyncio.to_thread(self.a6.run, claims),
             asyncio.to_thread(self.a7.run, clean_query, documents),

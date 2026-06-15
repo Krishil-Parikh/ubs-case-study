@@ -24,9 +24,12 @@ class _JSONFormatter(logging.Formatter):
         }
         if record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
-        # Any extra= kwargs passed to the logger call
+        # Any extra= kwargs passed to the logger call (skip internal LogRecord attrs)
+        _SKIP = frozenset(logging.LogRecord(
+            "", 0, "", 0, "", (), None
+        ).__dict__.keys()) | {"message", "asctime"}
         for key, val in record.__dict__.items():
-            if key not in logging.LogRecord.__dict__ and not key.startswith("_"):
+            if key not in _SKIP and not key.startswith("_"):
                 payload[key] = val
         return json.dumps(payload, default=str)
 
@@ -58,10 +61,11 @@ class _ConsoleFormatter(logging.Formatter):
         )
         msg = record.getMessage()
 
-        # Inline key=value extras for readability
+        # Inline key=value extras — skip standard LogRecord attributes
+        _STD = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys())
         extras = {
             k: v for k, v in record.__dict__.items()
-            if k not in logging.LogRecord.__dict__ and not k.startswith("_")
+            if k not in _STD and not k.startswith("_") and k != "message"
         }
         if extras:
             kv = "  " + "  ".join(f"{self._DIM}{k}{self._RESET}={colour}{v}{self._RESET}" for k, v in extras.items())

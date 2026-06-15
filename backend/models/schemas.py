@@ -36,6 +36,51 @@ class UncertaintyCategory(str, Enum):
     POPULATION  = "population"
 
 
+# ─── A3/A4 domain enums ───────────────────────────────────────────────────────
+
+class SourceType(str, Enum):
+    RESEARCH_PAPER = "research_paper"
+    NEWS_ARTICLE   = "news_article"
+    BLOG           = "blog"
+    UNKNOWN        = "unknown"
+
+
+class StudyDesign(str, Enum):
+    META_ANALYSIS     = "meta_analysis"
+    SYSTEMATIC_REVIEW = "systematic_review"
+    RCT               = "rct"
+    COHORT            = "cohort"
+    CASE_CONTROL      = "case_control"
+    CASE_REPORT       = "case_report"
+    NARRATIVE_REVIEW  = "narrative_review"
+    OPINION           = "opinion"
+    NOT_APPLICABLE    = "not_applicable"
+
+
+class CoISeverity(str, Enum):
+    NONE = "none"
+    LOW  = "low"
+    HIGH = "high"
+
+
+# ─── A3 sub-models ────────────────────────────────────────────────────────────
+
+class SpanReference(BaseModel):
+    """Span-level attribution: locates a claim within the source document."""
+    paragraph_index: Optional[int]  = None
+    sentence_text:   Optional[str]  = None
+    char_start:      Optional[int]  = None
+    char_end:        Optional[int]  = None
+
+
+class PIOTEntities(BaseModel):
+    """PIOT (Population · Intervention · Outcome · Timeframe) extracted per claim."""
+    population:   Optional[str] = None
+    intervention: Optional[str] = None
+    outcome:      Optional[str] = None
+    timeframe:    Optional[str] = None
+
+
 # ─── Phase 3 — Extraction ─────────────────────────────────────────────────────
 
 class Claim(BaseModel):
@@ -45,14 +90,27 @@ class Claim(BaseModel):
     claim_type: ClaimType
     confidence: float = Field(ge=0.0, le=1.0)
 
+    # Optional enrichment from A3
+    span:      Optional[SpanReference] = None
+    piot:      Optional[PIOTEntities]  = None
+    embedding: Optional[list[float]]   = None
+
 
 # ─── Phase 4 — Parallel scoring ───────────────────────────────────────────────
 
 class ReliabilityScore(BaseModel):
-    source_id:         str
-    score:             float = Field(ge=0.0, le=1.0)
-    source_type:       str
-    recency_score:     float
+    source_id:     str
+    score:         float = Field(ge=0.0, le=1.0)
+    source_type:   str
+    recency_score: float
+
+    # A4 extended fields
+    base_type_score:   float        = 0.5
+    coi_severity:      CoISeverity  = CoISeverity.NONE
+    coi_reason:        Optional[str] = None
+    study_design:      StudyDesign  = StudyDesign.NOT_APPLICABLE
+
+    # LLM escalation info
     llm_escalated:     bool          = False
     escalation_reason: Optional[str] = None
 
@@ -84,48 +142,37 @@ class ApplicabilityReport(BaseModel):
 # ─── Phase 5 — A8 Critique ────────────────────────────────────────────────────
 
 class LensRating(str, Enum):
-    """Severity of issues found by a single critique lens."""
-    SEVERE   = "severe"    # critical issues that heavily degrade trust
-    MODERATE = "moderate"  # notable issues with meaningful impact
-    MINOR    = "minor"     # minor issues that should be flagged
-    CLEAR    = "clear"     # no meaningful issues found
+    SEVERE   = "severe"
+    MODERATE = "moderate"
+    MINOR    = "minor"
+    CLEAR    = "clear"
 
 
 class LensAnalysis(BaseModel):
-    """Output of one adversarial lens."""
     rating:                 LensRating
     findings:               list[str] = Field(description="Specific, concrete issues found")
-    penalty_recommendation: float     = Field(ge=0.0, le=0.30, description="Recommended score deduction")
+    penalty_recommendation: float     = Field(ge=0.0, le=0.30)
 
 
 class CritiqueOutput(BaseModel):
-    """Full structured output from A8 Critique/Skeptic."""
-
-    # Four fixed lenses
     source_attack:       LensAnalysis
     scope_attack:        LensAnalysis
     completeness_attack: LensAnalysis
     convergence_attack:  LensAnalysis
 
-    # Hard override
     insufficient_evidence:        bool
     insufficient_evidence_reason: Optional[str] = None
 
-    # Adjusted component scores after adversarial pressure
     adjusted_reliability: float = Field(ge=0.0, le=1.0)
     adjusted_consensus:   float = Field(ge=0.0, le=1.0)
 
-    # Uncertainties to carry forward to A9
     key_uncertainties: list[str] = []
-
-    # Summary
-    overall_severity: LensRating
+    overall_severity:  LensRating
 
 
 # ─── Phase 5 — A9 ERS Calibration ────────────────────────────────────────────
 
 class ERSPenaltyBreakdown(BaseModel):
-    """Transparent audit trail for every penalty applied in A9."""
     contradiction_edges_hard:    int
     contradiction_edges_partial: int
     contradiction_penalty:       float
@@ -138,27 +185,20 @@ class ERSPenaltyBreakdown(BaseModel):
 
 
 class ERSResult(BaseModel):
-    """Final ERS score with full audit trail."""
-
-    # Core score
     score: float = Field(ge=0.0, le=1.0)
     band:  ERSBand
 
-    # Dynamic confidence band
     confidence_lower: float
     confidence_upper: float
 
-    # Formula inputs (post-critique)
     source_score:        float
     consensus_score:     float
     retrieval_relevance: float
 
-    # Penalty summary
     contradiction_penalty: float
     applicability_penalty: float
     uncertainty_penalty:   float
 
-    # Detailed breakdown and formula trace
     penalty_breakdown: Optional[ERSPenaltyBreakdown] = None
     formula_trace:     Optional[str]                 = None
 
@@ -166,7 +206,6 @@ class ERSResult(BaseModel):
 # ─── Phase 6 — Response Output Models ────────────────────────────────────────
 
 class SupportMapEntry(BaseModel):
-    """Maps a claim to the answer section it supports."""
     claim_id:             str
     source_id:            str
     supporting_text:      str
@@ -175,37 +214,33 @@ class SupportMapEntry(BaseModel):
 
 
 class ContradictionManifestEntry(BaseModel):
-    """Human-readable contradiction summary for the final output."""
     claim_a_text: str
     claim_b_text: str
     relation:     RelationType
     explanation:  str
-    severity:     str = "moderate"  # low | moderate | high
+    severity:     str = "moderate"
 
 
 class UncertaintyEntry(BaseModel):
-    """Structured uncertainty with category and impact assessment."""
     description:  str
     category:     UncertaintyCategory = UncertaintyCategory.DATA_GAP
-    impact_level: str                 = "moderate"  # low | moderate | high
+    impact_level: str                 = "moderate"
 
 
 class AnswerSection(BaseModel):
-    """A discrete section of the synthesized answer with inline citations."""
     heading:         str
     content:         str
     cited_claim_ids: list[str] = []
 
 
 class ResponseMetadata(BaseModel):
-    """Metadata about the response generation process."""
-    source_count:               int  = 0
-    claim_count:                int  = 0
-    contradiction_count:        int  = 0
-    applicability_flags_count:  int  = 0
-    insufficient_evidence:      bool = False
-    ers_band:                   str  = "Medium"
-    generation_model:           str  = "gemini-1.5-pro"
+    source_count:              int  = 0
+    claim_count:               int  = 0
+    contradiction_count:       int  = 0
+    applicability_flags_count: int  = 0
+    insufficient_evidence:     bool = False
+    ers_band:                  str  = "Medium"
+    generation_model:          str  = "gemini-1.5-pro"
 
 
 # ─── Pipeline request / response ─────────────────────────────────────────────
@@ -228,9 +263,9 @@ class PipelineResponse(BaseModel):
     insufficient_evidence: bool         = False
     session_id:           Optional[str] = None
 
-    # Phase 6 structured output fields
-    answer_sections:           list[AnswerSection]               = []
-    support_map:               list[SupportMapEntry]             = []
-    contradictions_manifest:   list[ContradictionManifestEntry]  = []
-    structured_uncertainties:  list[UncertaintyEntry]            = []
-    metadata:                  Optional[ResponseMetadata]        = None
+    # Phase 6 structured output
+    answer_sections:          list[AnswerSection]              = []
+    support_map:              list[SupportMapEntry]            = []
+    contradictions_manifest:  list[ContradictionManifestEntry] = []
+    structured_uncertainties: list[UncertaintyEntry]           = []
+    metadata:                 Optional[ResponseMetadata]       = None
