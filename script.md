@@ -281,3 +281,7 @@ We use two models from the Google Gemini family, selecting the appropriate tier 
 * **A11 Audit Agent**
   * *Why*: Provides compliance records and performance statistics for system improvement.
   * *How*: Uses FastAPI background tasks to log the execution payload to PostgreSQL and LangSmith, preventing latency overhead for the user.
+
+
+
+https://claude.ai/share/59eef7b7-04cb-4334-948f-be7d89b1ede7
