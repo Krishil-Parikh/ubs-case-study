@@ -1,623 +1,72 @@
-I think you're converging toward something much stronger now.
-
-I would **not** call the final metric `relevance_score`.
-
-You're mixing:
-
-* Source trustworthiness
-* Document relevance
-* Consensus
-* Recency
-
-Those are different concepts.
-
-Call it:
-
-```text
-Evidence Reliability Score (ERS)
-```
-
-or
-
-```text
-Evidence Confidence Score (ECS)
-```
-
-Much more accurate.
+Let me synthesize both perspectives carefully before diagramming.Good. Now let me synthesize everything carefully — both my earlier thinking and your document — and identify exactly where they agree, where they conflict, and what the ideal merged architecture looks like.
 
 ---
 
-# High Level Architecture
+## Synthesis: what your doc gets right that I should absorb
 
-```text
-                    User Question
-                           |
-                           ▼
-                  Ingestion Agent
-           (PII Redaction + Validation)
-                           |
-                           ▼
-                  Retrieval Agent
-      (Hybrid Search: BM25 + Qdrant + Rerank)
-                           |
-                           ▼
-                Evidence Extraction Agent
-            (Claims, Facts, Source Metadata)
-                           |
-        ┌──────────────────┼──────────────────┐
-        ▼                  ▼                  ▼
- Reliability Agent   Consensus Agent   Contradiction Agent
-        │                  │                  │
-        └──────────────────┼──────────────────┘
-                           ▼
-                    Critique Agent
-                           |
-                           ▼
-                 Confidence Agent
-                           |
-                           ▼
-                   Response Agent
-                           |
-                           ▼
-                 Audit / Trace Agent
-                           |
-                           ▼
-                 PostgreSQL + LangSmith
-```
+The Consensus Agent is a genuinely smart addition that I underweighted. Embedding all claims and computing a pairwise similarity matrix gives you a *structural* signal about evidence agreement that is independent of any individual source's reliability. Most teams won't build this. Keep it.
+
+The Retrieval Agent is fully correct as a distinct agent. My earlier framing assumed the corpus was pre-delivered; in a real production deployment you need hybrid BM25 + vector + rerank. That should be explicit in the architecture.
+
+The ERS formula `(0.45 × source_score + 0.35 × consensus_score + 0.20 × retrieval_relevance)` with penalty subtractions is clean and defensible. Much better than calling it `relevance_score`.
+
+The Applicability Agent suggestion at the end of your doc is the single most important thing the brief hints at, and deserves to be promoted from "one thing I'd still add" to a first-class mandatory agent.
 
 ---
 
-# Agent-by-Agent
+## Where I'd push back or refine
+
+Your doc places the Reliability Agent as a pure deterministic, no-LLM component. That's right for the base source-type and recency scoring. But conflict-of-interest detection (vendor pages, supplement sellers) and study design assessment (RCT vs. narrative review vs. blog post) need at least a lightweight classifier or LLM call for anything not already in metadata. So: deterministic first pass, LLM escalation for ambiguous cases only.
+
+The Contradiction Agent's approach of embedding → cluster → then sending similar pairs to an LLM is correct, but the `PARTIAL_CONTRADICTION` label is doing too much work. You need finer granularity: `scope_mismatch` and `population_mismatch` are not contradictions — they're applicability failures. Conflating them means the Critique Agent gets polluted input. The Contradiction Agent should only label genuine logical conflicts; scope/population mismatches should route to the Applicability Agent.
+
+The Critique Agent (your doc) and the Skeptic Agent (my earlier design) are the same thing. But your doc's Critique Agent prompt design is too open-ended — "what assumptions are being made?" is not a structured adversarial protocol. It needs to operate from fixed lenses with defined output slots, not free-form reflection. Otherwise it produces beautiful-sounding critique that doesn't actually constrain the Response Agent.
 
 ---
 
-## 1. Ingestion Agent
+## The final architecture: 11 agents
 
-### Responsibility
+Here is the merged, definitive design:
 
-Normalize and sanitize inputs.
+**Phase 1 — Ingress (sequential)**
+`A1 Ingestion` → GLiNER NER, PII redaction, prompt-injection filter, token budget enforcement, deduplication
 
-### Input
+**Phase 2 — Retrieval (sequential, within A2)**
+`A2 Retrieval` → BM25 + Qdrant vector search → hybrid merge → cross-encoder rerank → `TopKDocuments`
 
-```python
-question
-documents
-metadata
-```
+**Phase 3 — Extraction (sequential)**
+`A3 Evidence Extraction` → converts documents into `Claim[]` with typed annotations (quantitative, qualitative, hedged, methodological caveat)
 
-### Processing
+**Phase 4 — Parallel scoring (fan-out, all 4 run simultaneously)**
+`A4 Reliability` → deterministic source-type + recency scoring, LLM escalation for CoI/study-design edge cases → `ReliabilityScore[]`
+`A5 Consensus` → pairwise cosine similarity matrix → `consensus_score` per claim cluster
+`A6 Contradiction` → similarity-filtered pairs → LLM classification for logical conflicts only → `ContradictionGraph` (types: `SUPPORTS`, `CONTRADICTS`, `PARTIAL_CONTRADICTION`, `NOT_COMPARABLE`)
+`A7 Applicability` → checks question population vs. evidence population, question timeframe vs. evidence timeframe, question outcome vs. evidence outcome → `ApplicabilityReport` with per-source flags
 
-* File parsing
-* PII redaction
-* Metadata extraction
-* NER using GLiNER
+**Phase 5 — Adversarial reasoning (sequential)**
+`A8 Critique / Skeptic` → receives all Phase 4 outputs. Operates from four fixed lenses: source attack, scope/applicability attack, completeness attack, convergence attack. Has authority to emit `INSUFFICIENT_EVIDENCE` as a hard override.
+`A9 ERS Calibration` → computes `ERS = 0.45×source_score + 0.35×consensus_score + 0.20×retrieval_relevance` then applies contradiction penalty, applicability penalty, uncertainty penalty → final `0.0–1.0` score with confidence band
 
-Examples:
+**Phase 6 — Output**
+`A10 Response` → assembles final structured output: answer, ERS band (High/Medium/Low), support map, contradictions manifest, uncertainties list, `INSUFFICIENT_EVIDENCE` flag
 
-```text
-John Doe
-john@gmail.com
-+91xxxxxxxxxx
-```
+**Phase 7 — Async post-processing**
+`A11 Audit` → writes full trace to PostgreSQL + LangSmith. Supports replay and feedback ingestion.
 
-becomes
+The key structural improvements over both prior versions: Applicability is its own agent (not folded into Critique), contradiction detection is scoped to logical conflicts only (applicability failures stay in A7), and the ERS formula is computed in a dedicated calibration step after the Critique has had authority to modify inputs.
 
-```text
-[PERSON]
-[EMAIL]
-[PHONE]
-```
-
-### Output
-
-```python
-CleanDocument[]
-```
+Now the diagrams — I'll do the full pipeline first, then zoom into the ERS formula and the Critique agent's internal logic.Now the ERS formula internals — this deserves its own diagram because it's what makes the system defensible:And finally the Critique agent's internal anatomy — this is the agent that will make or break the evaluation:Click any node in the diagrams to go deeper on that component. Here's where the synthesis lands:
 
 ---
 
-## 2. Retrieval Agent
+## Key decisions and why
 
-### Responsibility
+**Applicability as its own agent (A7), not folded into Critique.** Your doc's suggestion to add an Applicability Agent is correct, and the reason goes deeper than just "it addresses the hidden eval criteria." Applicability failures and logical contradictions are fundamentally different problems. A `population_mismatch` is not a contradiction — it means a source simply isn't about the right thing. If you lump it into the Contradiction agent, you conflate two different evidence problems and make A9's penalty system ambiguous. A7 runs in parallel with A4/A5/A6, outputs an `ApplicabilityReport` with per-source flags, and feeds a dedicated `applicability_penalty` into ERS.
 
-Find relevant evidence.
+**Contradiction Agent scoped to logical conflicts only.** The Contradiction agent uses the right flow (embed → similarity filter at `> 0.8` → LLM classify), but it should only classify genuine logical conflicts. Scope/population mismatches that look like contradictions should not enter the `ContradictionGraph` — they belong in A7. This keeps the penalty system clean: contradiction penalty reflects evidence quality, applicability penalty reflects evidence relevance.
 
-### Stack
+**Critique agent input isolation is non-negotiable.** The Critique agent receives Phase 4 outputs — claims, scores, the contradiction graph, the applicability report. It does not receive any prior answer or synthesis. This is what makes the adversarial attack real. If you let the Critique see a drafted answer, it anchors on it and produces decoration, not adversarial pressure.
 
-```text
-Qdrant
-BM25
-Hybrid Retrieval
-Cross Encoder Reranker
-```
+**ERS is a computed output, not a heuristic.** The formula gives you auditability. Every evaluator can trace exactly why a score is `0.61` — 45% came from moderately reliable sources, consensus was moderate, but a high-severity contradiction and two applicability penalties pulled it down. That's defensible. A black-box "confidence: Medium" is not.
 
-### Steps
-
-1. Embed query
-2. Vector search
-3. BM25 search
-4. Merge results
-5. Rerank
-
-Output:
-
-```python
-TopKDocuments
-```
-
----
-
-## 3. Evidence Extraction Agent
-
-This is your RAG agent.
-
-### Responsibility
-
-Convert unstructured text into claims.
-
-Input:
-
-```python
-documents
-question
-```
-
-Output:
-
-```python
-Claim(
-  statement,
-  source_id,
-  evidence_span
-)
-```
-
-Example:
-
-```text
-Passkeys reduce phishing attacks.
-```
-
-becomes
-
-```json
-{
-  "claim":"Passkeys reduce phishing attacks",
-  "source":"D1"
-}
-```
-
----
-
-# 4. Reliability Agent
-
-Computes source reliability.
-
-No LLM.
-
-Pure deterministic logic.
-
----
-
-## Source Type Score
-
-```yaml
-peer_reviewed: 1.0
-government: 0.95
-industry_standard: 0.9
-news: 0.75
-blog: 0.6
-forum: 0.4
-vendor: 0.3
-```
-
----
-
-## Recency Score
-
-```python
-<1 year -> 1.0
-1-3 years -> 0.9
-3-5 years -> 0.7
-5+ years -> 0.5
-```
-
----
-
-Output:
-
-```python
-source_score
-```
-
----
-
-# 5. Consensus Agent
-
-This is actually a very smart addition.
-
-Most people won't think of this.
-
----
-
-Input
-
-```python
-Claims
-```
-
----
-
-Process
-
-Embed all claims.
-
-Create pairwise similarity matrix.
-
-```python
-cosine(claim_i, claim_j)
-```
-
-Example:
-
-| Claim | Similarity |
-| ----- | ---------- |
-| C1-C2 | 0.91       |
-| C1-C3 | 0.88       |
-| C1-C4 | 0.22       |
-
----
-
-Consensus Score
-
-```python
-consensus_score =
-average_similarity
-```
-
-Higher agreement
-
-→ stronger evidence
-
----
-
-Output
-
-```python
-consensus_score
-```
-
----
-
-# 6. Contradiction Agent
-
-This is the most important node.
-
----
-
-Step 1
-
-Embed claims.
-
-Cluster claims.
-
----
-
-Step 2
-
-For highly related claims:
-
-```python
-similarity > 0.8
-```
-
-send pair to LLM.
-
----
-
-Prompt
-
-```text
-Determine relation:
-
-SUPPORTS
-CONTRADICTS
-PARTIAL_CONTRADICTION
-NOT_COMPARABLE
-```
-
----
-
-Example
-
-```text
-Passkeys eliminate phishing.
-
-Passkeys reduce phishing.
-```
-
-Result
-
-```json
-{
-  "relation":"PARTIAL_CONTRADICTION"
-}
-```
-
----
-
-Output
-
-```python
-contradictions[]
-```
-
----
-
-# 7. Critique Agent (The Star)
-
-This is the actual Skeptic.
-
-Input:
-
-```python
-claims
-source_scores
-consensus_scores
-contradictions
-```
-
----
-
-Questions it asks:
-
-### What assumptions are being made?
-
-### Is evidence applicable?
-
-Example:
-
-Question:
-
-```text
-Mobile banking users
-```
-
-Evidence:
-
-```text
-Desktop users
-```
-
-Not applicable.
-
----
-
-### Are high-confidence claims supported by weak sources?
-
----
-
-### Is there enough evidence?
-
-Could answer:
-
-```text
-Insufficient Evidence
-```
-
-This should be allowed.
-
-Very important.
-
----
-
-Output
-
-```python
-skeptic_report
-```
-
----
-
-# 8. Confidence Agent
-
-Computes final score.
-
----
-
-I'd use:
-
-```python
-ERS =
-(
- 0.45 * source_score
- +
- 0.35 * consensus_score
- +
- 0.20 * retrieval_relevance
-)
-```
-
-Then apply penalties.
-
----
-
-Contradiction penalty
-
-```python
-ERS -= contradiction_penalty
-```
-
----
-
-Applicability penalty
-
-```python
-ERS -= applicability_penalty
-```
-
----
-
-Uncertainty penalty
-
-```python
-ERS -= uncertainty_penalty
-```
-
----
-
-Final:
-
-```python
-0.0 - 1.0
-```
-
----
-
-Mapping
-
-```python
->0.8 High
-
-0.6-0.8 Medium
-
-<0.6 Low
-```
-
----
-
-# 9. Response Agent
-
-Input
-
-```python
-skeptic_report
-claims
-confidence
-```
-
-Produces
-
-```json
-{
-  "answer": "...",
-  "confidence": "Medium",
-  "evidence": [...],
-  "contradictions": [...],
-  "uncertainties": [...]
-}
-```
-
-Matches the assignment perfectly.
-
----
-
-# 10. Audit Agent
-
-Production requirement.
-
-Stores:
-
-```python
-question
-
-retrieved_docs
-
-claims
-
-scores
-
-contradictions
-
-final_answer
-
-trace_id
-
-timestamp
-```
-
-into
-
-```text
-PostgreSQL
-LangSmith
-```
-
-Supports:
-
-* Replay
-* Auditability
-* Explainability
-
----
-
-# Mermaid Diagram
-
-```mermaid
-flowchart TD
-
-    A[User Question + Corpus]
-
-    A --> B[Ingestion Agent]
-
-    B --> B1[GLiNER NER]
-    B1 --> B2[PII Redaction]
-    B2 --> C[Retrieval Agent]
-
-    C --> C1[BM25 Search]
-    C --> C2[Qdrant Vector Search]
-
-    C1 --> C3[Hybrid Merge]
-    C2 --> C3
-
-    C3 --> C4[Cross Encoder Reranker]
-
-    C4 --> D[Evidence Extraction Agent]
-
-    D --> E[Reliability Agent]
-    D --> F[Consensus Agent]
-    D --> G[Contradiction Agent]
-
-    E --> H[Critique Agent]
-    F --> H
-    G --> H
-
-    H --> I[Confidence Agent]
-
-    I --> J[Response Agent]
-
-    J --> K[Audit Agent]
-
-    K --> L[(PostgreSQL)]
-
-    K --> M[(LangSmith)]
-```
-
----
-
-One thing I'd still add: an **Applicability Agent**.
-
-UBS literally hints that hidden test cases may contain:
-
-* wrong population
-* wrong timeframe
-* wrong outcome
-* wrong context
-
-A dedicated Applicability Agent checking:
-
-```text
-Question Population
-vs
-Evidence Population
-
-Question Timeframe
-vs
-Evidence Timeframe
-
-Question Outcome
-vs
-Evidence Outcome
-```
-
-would likely score very highly because it directly addresses the hidden evaluation criteria mentioned in the brief.
+**Security layer is built into A1, not sprinkled later.** PII redaction, injection filter, and token budget enforcement all happen at the ingestion boundary. Nothing downstream should ever assume its inputs are clean — but the architecture enforces that the attack surface is minimized at entry.
