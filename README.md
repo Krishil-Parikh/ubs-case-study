@@ -1,29 +1,3 @@
-Let me synthesize both perspectives carefully before diagramming.Good. Now let me synthesize everything carefully — both my earlier thinking and your document — and identify exactly where they agree, where they conflict, and what the ideal merged architecture looks like.
-
----
-
-## Synthesis: what your doc gets right that I should absorb
-
-The Consensus Agent is a genuinely smart addition that I underweighted. Embedding all claims and computing a pairwise similarity matrix gives you a *structural* signal about evidence agreement that is independent of any individual source's reliability. Most teams won't build this. Keep it.
-
-The Retrieval Agent is fully correct as a distinct agent. My earlier framing assumed the corpus was pre-delivered; in a real production deployment you need hybrid BM25 + vector + rerank. That should be explicit in the architecture.
-
-The ERS formula `(0.45 × source_score + 0.35 × consensus_score + 0.20 × retrieval_relevance)` with penalty subtractions is clean and defensible. Much better than calling it `relevance_score`.
-
-The Applicability Agent suggestion at the end of your doc is the single most important thing the brief hints at, and deserves to be promoted from "one thing I'd still add" to a first-class mandatory agent.
-
----
-
-## Where I'd push back or refine
-
-Your doc places the Reliability Agent as a pure deterministic, no-LLM component. That's right for the base source-type and recency scoring. But conflict-of-interest detection (vendor pages, supplement sellers) and study design assessment (RCT vs. narrative review vs. blog post) need at least a lightweight classifier or LLM call for anything not already in metadata. So: deterministic first pass, LLM escalation for ambiguous cases only.
-
-The Contradiction Agent's approach of embedding → cluster → then sending similar pairs to an LLM is correct, but the `PARTIAL_CONTRADICTION` label is doing too much work. You need finer granularity: `scope_mismatch` and `population_mismatch` are not contradictions — they're applicability failures. Conflating them means the Critique Agent gets polluted input. The Contradiction Agent should only label genuine logical conflicts; scope/population mismatches should route to the Applicability Agent.
-
-The Critique Agent (your doc) and the Skeptic Agent (my earlier design) are the same thing. But your doc's Critique Agent prompt design is too open-ended — "what assumptions are being made?" is not a structured adversarial protocol. It needs to operate from fixed lenses with defined output slots, not free-form reflection. Otherwise it produces beautiful-sounding critique that doesn't actually constrain the Response Agent.
-
----
-
 ## The final architecture: 11 agents
 
 Here is the merged, definitive design:
